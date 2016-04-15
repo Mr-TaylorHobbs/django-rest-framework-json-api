@@ -1,15 +1,14 @@
 """
 Utils.
 """
+import inspect
 import copy
 from collections import OrderedDict
-import inspect
 
 import inflection
 from django.conf import settings
 from django.utils import encoding
 from django.utils import six
-from django.utils.module_loading import import_string as import_class_from_dotted_path
 from django.utils.translation import ugettext_lazy as _
 from rest_framework.exceptions import APIException
 from rest_framework import exceptions
@@ -23,6 +22,32 @@ try:
     from rest_framework_nested.relations import HyperlinkedRouterField
 except ImportError:
     HyperlinkedRouterField = type(None)
+
+try:
+    from django.utils.module_loading import import_string as import_class_from_dotted_path
+except:
+    import sys
+    from importlib import import_module
+
+    def import_class_from_dotted_path(dotted_path):
+        """
+        Import a dotted module path and return the attribute/class designated by the
+        last name in the path. Raise ImportError if the import failed.
+        """
+        try:
+            module_path, class_name = dotted_path.rsplit('.', 1)
+        except ValueError:
+            msg = "%s doesn't look like a module path" % dotted_path
+            six.reraise(ImportError, ImportError(msg), sys.exc_info()[2])
+
+        module = import_module(module_path)
+
+        try:
+            return getattr(module, class_name)
+        except AttributeError:
+            msg = 'Module "%s" does not define a "%s" attribute/class' % (
+                module_path, class_name)
+            six.reraise(ImportError, ImportError(msg), sys.exc_info()[2])
 
 
 def get_resource_name(context):
@@ -84,6 +109,7 @@ def get_serializer_fields(serializer):
             except KeyError:
                 pass
         return fields
+
 
 def format_keys(obj, format_type=None):
     """
@@ -217,10 +243,10 @@ def get_resource_type_from_manager(manager):
 
 
 def get_resource_type_from_serializer(serializer):
-    if hasattr(serializer.Meta, 'resource_name'):
-        return serializer.Meta.resource_name
-    else:
-        return get_resource_type_from_model(serializer.Meta.model)
+    return getattr(
+        serializer.Meta,
+        'resource_name',
+        get_resource_type_from_model(serializer.Meta.model))
 
 
 def get_included_serializers(serializer):
@@ -252,6 +278,33 @@ class Hyperlink(six.text_type):
         return ret
 
     is_hyperlink = True
+
+
+class ClassLookupDict(object):
+    """
+    Takes a dictionary with classes as keys.
+    Lookups against this object will traverses the object's inheritance
+    hierarchy in method resolution order, and returns the first matching value
+    from the dictionary or raises a KeyError if nothing matches.
+    """
+    def __init__(self, mapping):
+        self.mapping = mapping
+
+    def __getitem__(self, key):
+        if hasattr(key, '_proxy_class'):
+            # Deal with proxy classes. Ie. BoundField behaves as if it
+            # is a Field instance when using ClassLookupDict.
+            base_class = key._proxy_class
+        else:
+            base_class = key.__class__
+
+        for cls in inspect.getmro(base_class):
+            if cls in self.mapping:
+                return self.mapping[cls]
+        raise KeyError('Class %s not found in lookup.' % base_class.__name__)
+
+    def __setitem__(self, key, value):
+        self.mapping[key] = value
 
 
 def format_drf_errors(response, context, exc):

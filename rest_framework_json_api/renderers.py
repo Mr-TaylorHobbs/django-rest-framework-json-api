@@ -7,7 +7,7 @@ from collections import OrderedDict
 from django.utils import six, encoding
 from rest_framework import relations
 from rest_framework import renderers
-from rest_framework.serializers import BaseSerializer, ListSerializer, ModelSerializer
+from rest_framework.serializers import BaseSerializer, ModelSerializer
 from rest_framework.settings import api_settings
 
 from . import utils
@@ -189,23 +189,6 @@ class JSONRenderer(renderers.JSONRenderer):
                 })
                 continue
 
-            if isinstance(field, ListSerializer):
-                relation_data = list()
-
-                serializer_data = resource.get(field_name)
-                resource_instance_queryset = list(relation_instance_or_manager.all())
-                if isinstance(serializer_data, list):
-                    for position in range(len(serializer_data)):
-                        nested_resource_instance = resource_instance_queryset[position]
-                        nested_resource_instance_type = utils.get_resource_type_from_instance(nested_resource_instance)
-                        relation_data.append(OrderedDict([
-                            ('type', nested_resource_instance_type),
-                            ('id', encoding.force_text(nested_resource_instance.pk))
-                        ]))
-
-                    data.update({field_name: {'data': relation_data}})
-                    continue
-
             if isinstance(field, ModelSerializer):
                 relation_model = field.Meta.model
                 relation_type = utils.format_relation_name(relation_model.__name__)
@@ -248,9 +231,7 @@ class JSONRenderer(renderers.JSONRenderer):
                 included_resources.remove(field_name)
             except ValueError:
                 # Skip fields not in requested included resources
-                # If no child field, directly continue with the next field
-                if field_name not in [node.split('.')[0] for node in included_resources]:
-                    continue
+                continue
 
             try:
                 relation_instance_or_manager = getattr(resource_instance, field_name)
@@ -280,28 +261,6 @@ class JSONRenderer(renderers.JSONRenderer):
                     continue
                 field = serializer_class(relation_instance_or_manager, context=context)
                 serializer_data = field.data
-
-            if isinstance(field, ListSerializer):
-                serializer = field.child
-                relation_type = utils.get_resource_type_from_serializer(serializer)
-                relation_queryset = list(relation_instance_or_manager.all())
-
-                # Get the serializer fields
-                serializer_fields = utils.get_serializer_fields(serializer)
-                if serializer_data:
-                    for position in range(len(serializer_data)):
-                        serializer_resource = serializer_data[position]
-                        nested_resource_instance = relation_queryset[position]
-                        included_data.append(
-                            JSONRenderer.build_json_resource_obj(
-                                serializer_fields, serializer_resource, nested_resource_instance, relation_type
-                            )
-                        )
-                        included_data.extend(
-                            JSONRenderer.extract_included(
-                                serializer_fields, serializer_resource, nested_resource_instance, new_included_resources
-                            )
-                        )
 
             if isinstance(field, ModelSerializer):
 
@@ -338,18 +297,13 @@ class JSONRenderer(renderers.JSONRenderer):
         return data
 
     @staticmethod
-    def extract_root_meta(serializer, resource):
-        many = False
-        if hasattr(serializer, 'child'):
-            many = True
-            serializer = serializer.child
-        
-        data = {}
+    def extract_root_meta(serializer, resource, meta):
         if getattr(serializer, 'get_root_meta', None):
-            json_api_meta = serializer.get_root_meta(resource, many)
-            assert isinstance(json_api_meta, dict), 'get_root_meta must return a dict'
-            data.update(json_api_meta)
-        return data
+            root_meta = serializer.get_root_meta(resource)
+            if root_meta:
+                assert isinstance(root_meta, dict), 'get_root_meta must return a dict'
+                meta.update(root_meta)
+        return meta
 
     @staticmethod
     def build_json_resource_obj(fields, resource, resource_instance, resource_name):
@@ -417,7 +371,6 @@ class JSONRenderer(renderers.JSONRenderer):
         else:
             included_resources = list()
 
-        json_api_data = data
         json_api_included = list()
         # initialize json_api_meta with pagination meta or an empty dict
         json_api_meta = data.get('meta', {}) if isinstance(data, dict) else {}
@@ -427,44 +380,51 @@ class JSONRenderer(renderers.JSONRenderer):
         else:
             serializer_data = data
 
-        serializer = getattr(serializer_data, 'serializer', None)
+        if hasattr(serializer_data, 'serializer') and getattr(serializer_data.serializer, 'many', False):
+            # The below is not true for non-paginated responses
+            # and isinstance(data, dict):
 
-        if serializer is not None:
+            # If detail view then json api spec expects dict, otherwise a list
+            # - http://jsonapi.org/format/#document-top-level
+            # The `results` key may be missing if unpaginated or an OPTIONS request
+
+            resource_serializer = serializer_data.serializer
 
             # Get the serializer fields
-            fields = utils.get_serializer_fields(serializer)
+            fields = utils.get_serializer_fields(resource_serializer)
 
-            # Extract root meta for any type of serializer
-            json_api_meta.update(self.extract_root_meta(serializer, serializer_data))
+            json_api_data = list()
+            for position in range(len(serializer_data)):
+                resource = serializer_data[position]  # Get current resource
+                resource_instance = resource_serializer.instance[position]  # Get current instance
 
-            if getattr(serializer, 'many', False):
-                json_api_data = list()
-
-                for position in range(len(serializer_data)):
-                    resource = serializer_data[position]  # Get current resource
-                    resource_instance = serializer.instance[position]  # Get current instance
-
-                    json_resource_obj = self.build_json_resource_obj(fields, resource, resource_instance, resource_name)
-                    meta = self.extract_meta(serializer, resource)
-                    if meta:
-                        json_resource_obj.update({'meta': utils.format_keys(meta)})
-                    json_api_data.append(json_resource_obj)
-
-                    included = self.extract_included(fields, resource, resource_instance, included_resources)
-                    if included:
-                        json_api_included.extend(included)
-            else:
-                resource_instance = serializer.instance
-                json_api_data = self.build_json_resource_obj(fields, serializer_data, resource_instance, resource_name)
-
-                meta = self.extract_meta(serializer, serializer_data)
+                json_resource_obj = self.build_json_resource_obj(fields, resource, resource_instance, resource_name)
+                meta = self.extract_meta(resource_serializer, resource)
                 if meta:
-                    json_api_data.update({'meta': utils.format_keys(meta)})
+                    json_resource_obj.update({'meta': utils.format_keys(meta)})
+                json_api_meta = self.extract_root_meta(resource_serializer, resource, json_api_meta)
+                json_api_data.append(json_resource_obj)
 
-                included = self.extract_included(fields, serializer_data, resource_instance, included_resources)
+                included = self.extract_included(fields, resource, resource_instance, included_resources)
                 if included:
                     json_api_included.extend(included)
+        else:
+            # Check if data contains a serializer
+            if hasattr(data, 'serializer'):
+                fields = utils.get_serializer_fields(data.serializer)
+                resource_instance = data.serializer.instance
+                json_api_data = self.build_json_resource_obj(fields, data, resource_instance, resource_name)
 
+                meta = self.extract_meta(data.serializer, data)
+                if meta:
+                    json_api_data.update({'meta': utils.format_keys(meta)})
+                json_api_meta = self.extract_root_meta(data.serializer, data, json_api_meta)
+
+                included = self.extract_included(fields, data, resource_instance, included_resources)
+                if included:
+                    json_api_included.extend(included)
+            else:
+                json_api_data = data
 
         # Make sure we render data in a specific order
         render_data = OrderedDict()

@@ -6,11 +6,10 @@ from django.db.models.query import QuerySet
 from django.db.models.manager import Manager
 from rest_framework import generics
 from rest_framework.response import Response
-from rest_framework.exceptions import NotFound, MethodNotAllowed
 from rest_framework.reverse import reverse
 from rest_framework.serializers import Serializer
 
-from rest_framework_json_api.exceptions import Conflict
+from rest_framework_json_api.exceptions import Conflict, NotFound, MethodNotAllowed
 from rest_framework_json_api.serializers import ResourceIdentifierObjectSerializer
 from rest_framework_json_api.utils import get_resource_type_from_instance, OrderedDict, Hyperlink
 

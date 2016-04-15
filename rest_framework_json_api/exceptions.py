@@ -22,3 +22,37 @@ def exception_handler(exc, context):
 class Conflict(exceptions.APIException):
     status_code = status.HTTP_409_CONFLICT
     default_detail = _('Conflict.')
+
+
+class APIException(Exception):
+    """
+    Base class for REST framework exceptions.
+    Subclasses should provide `.status_code` and `.default_detail` properties.
+    """
+    status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+    default_detail = _('A server error occurred.')
+
+    def __init__(self, detail=None):
+        if detail is not None:
+            self.detail = force_text(detail)
+        else:
+            self.detail = force_text(self.default_detail)
+
+    def __str__(self):
+        return self.detail
+
+
+class NotFound(APIException):
+    status_code = status.HTTP_404_NOT_FOUND
+    default_detail = _('Not found.')
+
+
+class MethodNotAllowed(APIException):
+    status_code = status.HTTP_405_METHOD_NOT_ALLOWED
+    default_detail = _('Method "{method}" not allowed.')
+
+    def __init__(self, method, detail=None):
+        if detail is not None:
+            self.detail = force_text(detail)
+        else:
+            self.detail = force_text(self.default_detail).format(method=method)
